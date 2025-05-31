@@ -30,6 +30,14 @@ mvn clean install
 mvn spring-boot:run
 ```
 
+## Screenshots
+### API Payment Creation via Postman
+![Description](screenshots/Create_Payment.png)
+### Payment GUI
+![Description](screenshots/PayPal_GUI.png)
+### Database Payment Record
+![Description](screenshots/DB_Records.png)
+
 **Testing:**
 ```bash
 mvn test

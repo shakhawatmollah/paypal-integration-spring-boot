@@ -1,5 +1,6 @@
 package com.shakhawat.paypalintegration.service.impl;
 
+import com.shakhawat.paypalintegration.dto.PayPalMapper;
 import com.shakhawat.paypalintegration.dto.PaymentOrderDto;
 import com.shakhawat.paypalintegration.dto.PaymentResponse;
 import com.shakhawat.paypalintegration.exception.PaymentException;
@@ -141,14 +142,8 @@ public class PayPalServiceImpl implements PayPalService {
     @Transactional
     public Payment refundPayment(String paymentId, BigDecimal amount, String note) {
         try {
-            // Get the original payment
             com.paypal.api.payments.Payment paypalPayment =
                     com.paypal.api.payments.Payment.get(apiContext, paymentId);
-
-            // Find sale ID to refund
-//            String saleId = paypalPayment.getTransactions().get(0)
-//                    .getRelatedResources().get(0)
-//                    .getSale().getId();
 
             // Create refund
             RefundRequest refundRequest = new RefundRequest();
@@ -184,7 +179,6 @@ public class PayPalServiceImpl implements PayPalService {
         }
     }
 
-    // Helper methods
     private Payment mapToPaymentEntity(com.paypal.api.payments.Payment paypalPayment,
                                        PaymentOrderDto dto) {
         Payment payment = new Payment();
@@ -215,19 +209,20 @@ public class PayPalServiceImpl implements PayPalService {
         PaymentResponse response = new PaymentResponse();
         response.setPaymentId(payment.getId());
         response.setStatus(payment.getState());
-        response.setLinks(payment.getLinks());
+        response.setLinks(PayPalMapper.toLinkDtoList(payment.getLinks()));
 
         payment.getLinks().stream()
-                .filter(link -> link.getRel().equals("approval_url"))
+                .filter(link -> "approval_url".equals(link.getRel()))
                 .findFirst()
                 .ifPresent(link -> response.setApprovalUrl(link.getHref()));
 
         return response;
     }
 
+
     private void handlePaymentCompletedEvent(Event event) {
-        Sale sale = (Sale) event.getResource(); // Cast resource to Sale
-        String paymentId = sale.getParentPayment(); // Retrieve parent payment ID
+        Sale sale = (Sale) event.getResource();
+        String paymentId = sale.getParentPayment();
         paymentRepository.findByPaymentId(paymentId)
                 .ifPresent(p -> {
                     p.setStatus(PaymentStatus.COMPLETED);
@@ -236,8 +231,8 @@ public class PayPalServiceImpl implements PayPalService {
     }
 
     private void handleRefundEvent(Event event) {
-        Sale sale = (Sale) event.getResource(); // Cast resource to Sale
-        String paymentId = sale.getParentPayment(); // Retrieve parent payment ID
+        Sale sale = (Sale) event.getResource();
+        String paymentId = sale.getParentPayment();
         paymentRepository.findByPaymentId(paymentId)
                 .ifPresent(p -> {
                     p.setStatus(PaymentStatus.REFUNDED);
