@@ -1,12 +1,16 @@
 package com.shakhawat.paypalintegration.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paypal.base.rest.JSONFormatter;
 import com.shakhawat.paypalintegration.dto.PayPalMapper;
 import com.shakhawat.paypalintegration.dto.PaymentOrderDto;
 import com.shakhawat.paypalintegration.dto.PaymentResponse;
 import com.shakhawat.paypalintegration.exception.PaymentException;
 import com.shakhawat.paypalintegration.model.Payment;
 import com.shakhawat.paypalintegration.model.PaymentStatus;
+import com.shakhawat.paypalintegration.model.TransactionCapture;
 import com.shakhawat.paypalintegration.repository.PaymentRepository;
+import com.shakhawat.paypalintegration.repository.TransactionCaptureRepository;
 import com.shakhawat.paypalintegration.service.PayPalService;
 import com.paypal.api.payments.*;
 import com.paypal.base.rest.APIContext;
@@ -17,8 +21,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 
@@ -29,6 +35,7 @@ public class PayPalServiceImpl implements PayPalService {
 
     private final APIContext apiContext;
     private final PaymentRepository paymentRepository;
+    private final TransactionCaptureRepository captureRepository;
 
     @Override
     @Transactional
@@ -115,10 +122,12 @@ public class PayPalServiceImpl implements PayPalService {
 
             if ("PAYMENT.SALE.COMPLETED".equals(eventType) && "sale".equals(resourceType)) {
                 handlePaymentCompletedEvent(event);
-            } else if ("PAYMENT.CAPTURE.REFUNDED".equals(eventType)) {
+            } else if ("PAYMENT.CAPTURE.COMPLETED".equals(eventType) && "capture".equals(resourceType)) {
+                handleCaptureCompleted(event);
+            }
+            else if ("PAYMENT.CAPTURE.REFUNDED".equals(eventType)) {
                 handleRefundEvent(event);
             }
-            // Add other event types as needed
         } catch (Exception e) {
             log.error("Error processing webhook event", e);
             throw new PaymentException("Error processing webhook event",
@@ -221,13 +230,53 @@ public class PayPalServiceImpl implements PayPalService {
 
 
     private void handlePaymentCompletedEvent(Event event) {
-        Sale sale = (Sale) event.getResource();
-        String paymentId = sale.getParentPayment();
+
+        String paymentId;
+
+        if(event.getResourceType().equals("sale")) {
+            ObjectMapper objectMapper = new ObjectMapper();
+            com.shakhawat.paypalintegration.model.Sale sale = objectMapper.convertValue(event.getResource(), com.shakhawat.paypalintegration.model.Sale.class);
+            paymentId = sale.getId();
+            log.info("✅ Sale ID: {}", sale.getId());
+            log.info("💵 Amount: {} {}", sale.getAmount().getTotal(), sale.getAmount().getCurrency());
+        } else {
+            Sale sale = (Sale) event.getResource();
+            paymentId = sale.getParentPayment();
+        }
+
         paymentRepository.findByPaymentId(paymentId)
                 .ifPresent(p -> {
                     p.setStatus(PaymentStatus.COMPLETED);
                     paymentRepository.save(p);
                 });
+    }
+
+
+    private void handleCaptureCompleted(Event event) {
+        ObjectMapper objectMapper = new ObjectMapper();
+        com.shakhawat.paypalintegration.model.Capture capture = objectMapper.convertValue(event.getResource(), com.shakhawat.paypalintegration.model.Capture.class);
+
+        // Avoid duplicates (idempotency)
+        if (captureRepository.findByCaptureId(capture.getId()).isPresent()) {
+            log.info("⚠️ Capture ID {} already processed. Skipping.", capture.getId());
+            return;
+        }
+
+        TransactionCapture tx = TransactionCapture.builder()
+                .captureId(capture.getId())
+                .status(capture.getStatus())
+                .amount(new BigDecimal(capture.getAmount().getValue()))
+                .currency(capture.getAmount().getCurrency_code())
+                .finalCapture(capture.getFinal_capture())
+                .createTime(OffsetDateTime.parse(capture.getCreate_time()))
+                .updateTime(OffsetDateTime.parse(capture.getUpdate_time()))
+                .invoiceId(capture.getInvoice_id())
+                .customId(capture.getCustom_id())
+                .rawPayload(JSONFormatter.toJSON(event)) // optional for auditing
+                .build();
+
+        captureRepository.save(tx);
+        log.info("✅ Saved Capture Transaction: {}", tx.getCaptureId());
     }
 
     private void handleRefundEvent(Event event) {
